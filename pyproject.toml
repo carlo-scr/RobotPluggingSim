@@ -1,0 +1,25 @@
+[project]
+name = "plugsim"
+version = "0.1.0"
+description = "MuJoCo simulation of bimanual RJ45 cable plugging (WR1 proxy) for failure detection / steering / recovery research"
+requires-python = ">=3.10"
+dependencies = [
+    "mujoco>=3.2",
+    "numpy>=1.24",
+    "pandas>=2.0",
+    "pyarrow>=14",
+    "imageio[ffmpeg]>=2.31",
+    "matplotlib>=3.7",
+]
+
+[project.optional-dependencies]
+learn = ["torch>=2.1", "scipy>=1.10"]  # notebooks 05-07 (preinstalled on Colab)
+notebooks = ["jupyter", "nbconvert", "ipykernel"]
+dev = ["pytest>=8"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["plugsim", "plugsim.learn"]

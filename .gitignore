@@ -1,0 +1,10 @@
+.venv/
+data/
+__pycache__/
+*.egg-info/
+.ipynb_checkpoints/
+runs/
+plugsim/_assets/
+MUJOCO_LOG.TXT
+*.zip
+.DS_Store
