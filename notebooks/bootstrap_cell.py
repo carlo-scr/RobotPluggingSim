@@ -3,7 +3,8 @@
 # on the VM: fetches it from (1) PLUGSIM_REPO (git URL, default: the public repo), (2) /content/RobotPluggingSim.zip, or
 # (3) MyDrive/RobotPluggingSim (Drive), installs it, and keeps data/ + runs/ on Drive when mounted.
 import os, sys, pathlib, subprocess
-PLUGSIM_REPO = os.environ.get("PLUGSIM_REPO", "https://github.com/carlo-scr/RobotPluggingSim.git")  # Colab: code is cloned from here
+DEFAULT_REPO = "https://github.com/carlo-scr/RobotPluggingSim.git"
+PLUGSIM_REPO = os.environ.get("PLUGSIM_REPO") or DEFAULT_REPO  # Colab: code is cloned from here
 USE_DRIVE = os.environ.get("PLUGSIM_DRIVE", "1") == "1"  # set False if drive.mount hangs in your client
 IN_COLAB = "google.colab" in sys.modules or "COLAB_RELEASE_TAG" in os.environ
 if IN_COLAB:
@@ -28,8 +29,8 @@ if IN_COLAB:
         if (DRIVE / "RobotPluggingSim").exists():
             subprocess.run(["rsync", "-a", "--exclude", ".venv", "--exclude", "data", "--exclude", "runs", "--exclude", "media",
                             f"{DRIVE}/RobotPluggingSim/", f"{CODE}/"], check=True)
-        else:
-            raise RuntimeError("Code not found: set PLUGSIM_REPO, upload /content/RobotPluggingSim.zip, or put the folder in MyDrive/RobotPluggingSim")
+        else:  # last resort: the public repo
+            subprocess.run(["git", "clone", "-q", DEFAULT_REPO, str(CODE)], check=True)
     subprocess.run([sys.executable, "-m", "pip", "install", "-q", "-e", str(CODE)], check=True)
     if DRIVE.exists():  # persist datasets and checkpoints across sessions / notebooks
         for d in ("data", "runs"):
