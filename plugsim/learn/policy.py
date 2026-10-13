@@ -384,8 +384,10 @@ def train_policy(episodes, cfg: PolicyCfg, steps=3000, bs=256, lr=3e-4, device="
     sched = torch.optim.lr_scheduler.OneCycleLR(opt, max_lr=lr, total_steps=steps, pct_start=0.05)
     hist, t0 = [], time.time()
     n = len(L)
+    p_ema, p_pol = list(ema.parameters()), list(pol.parameters())
     for it in range(steps):
-        j = np.random.randint(0, n, bs)
+        # sample indices on the device (no host->device copy per step); image mode needs them on the CPU
+        j = torch.randint(0, n, (bs,), device=device) if frames is None else np.random.randint(0, n, bs)
         imgs = None
         if frames is not None:
             imgs = torch.stack([torch.stack([torch.stack([frames[idx[k][0]][c][o] for c in cfg.cams]) for o in idx[k][1]]) for k in j])
@@ -397,14 +399,14 @@ def train_policy(episodes, cfg: PolicyCfg, steps=3000, bs=256, lr=3e-4, device="
         opt.step()
         sched.step()
         d = min(0.999, (1 + it) / (10 + it))
-        with torch.no_grad():
-            for pe, pp in zip(ema.parameters(), pol.parameters()):
-                pe.mul_(d).add_(pp.detach(), alpha=1 - d)
-        hist.append(loss.item())
+        with torch.no_grad():  # EMA of the weights, as fused multi-tensor ops
+            torch._foreach_mul_(p_ema, d)
+            torch._foreach_add_(p_ema, p_pol, alpha=1 - d)
+        hist.append(loss.detach())  # no GPU sync per step
         if log and (it % log_every == 0 or it == steps - 1):
-            log(f"[policy] step {it:5d}  loss {np.mean(hist[-log_every:]):.4f}  ({time.time() - t0:.0f}s)")
+            log(f"[policy] step {it:5d}  loss {torch.stack(hist[-log_every:]).mean().item():.4f}  ({time.time() - t0:.0f}s)")
     ema.obs_norm, ema.act_norm = pol.obs_norm, pol.act_norm
-    return ema.eval(), hist
+    return ema.eval(), torch.stack(hist).cpu().numpy().tolist()
 
 
 def save_policy(pol: DiffusionPolicy, path):

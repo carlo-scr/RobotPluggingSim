@@ -20,6 +20,10 @@ from pathlib import Path
 
 if sys.platform.startswith("linux") and not os.environ.get("DISPLAY"):
     os.environ.setdefault("MUJOCO_GL", "egl")
+# One BLAS/OpenMP thread per worker: the IK solves tiny 6x6 systems, and multi-threaded BLAS in every
+# process oversubscribes the cores (this made Colab generation ~6x slower). Spawned workers inherit it.
+for _v in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS", "NUMEXPR_NUM_THREADS", "VECLIB_MAXIMUM_THREADS"):
+    os.environ.setdefault(_v, "1")
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 

@@ -8,6 +8,9 @@ PLUGSIM_REPO = os.environ.get("PLUGSIM_REPO") or DEFAULT_REPO  # Colab: code is 
 USE_DRIVE = os.environ.get("PLUGSIM_DRIVE", "1") == "1"  # set False if drive.mount hangs in your client
 IN_COLAB = "google.colab" in sys.modules or "COLAB_RELEASE_TAG" in os.environ
 if IN_COLAB:
+    # numpy's BLAS: one thread (the sim solves tiny systems; extra threads only add contention)
+    os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
+    os.environ.setdefault("MKL_NUM_THREADS", "1")
     os.environ.setdefault("MUJOCO_GL", "egl")
     os.environ.setdefault("PYOPENGL_PLATFORM", "egl")
     CODE = pathlib.Path("/content/RobotPluggingSim")
