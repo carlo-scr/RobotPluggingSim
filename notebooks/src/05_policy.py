@@ -55,26 +55,31 @@ print(SCALE, P)
 
 # %% [markdown]
 # ## 1 · Demonstrations (nominal scripted expert + DART noise)
+# Re-running after a disconnect is cheap: cached demos and a saved checkpoint are reused. If the
+# kernel restarted, run **all** cells from the top again (the first cells only re-import).
 
 # %%
-if not (DATA / "index_0.parquet").exists():
+print("cached demos:", (DATA / "index_0.parquet").exists(), "| cached policy:", CKPT.exists(), "->", CKPT)
+if not (DATA / "index_0.parquet").exists() and not (CKPT.exists() and not os.environ.get("RETRAIN")):
     cams = "none" if P["obs_mode"] == "state" else ",".join(IMG_CAMS)
     cfg_over = json.dumps({"camera.width": 128, "camera.height": 72})
     t = time.time()
     r = subprocess.run([sys.executable, str(ROOT / "scripts/generate_dataset.py"), "--out", str(DATA), "--n", str(P["n_demos"]), "--workers", str(P["workers"]),
                         "--mix", "nominal:1", "--cameras", cams, "--dart", str(P["dart"]), "--no-states", "--cfg", cfg_over], capture_output=True, text=True)
     print(r.stdout.splitlines()[-1] if r.stdout else r.stderr[-2000:], f"({time.time() - t:.0f}s)")
-idx = list_episodes(DATA)
-idx = idx[idx.outcome == "success"]
-eps = load_many(idx.path.tolist(), cams=IMG_CAMS if P["obs_mode"] == "image" else (), frames=P["obs_mode"] == "image", progress=False)
-print(f"{len(eps)} successful demos, {sum(len(e['action']) for e in eps)} steps")
+NEED_TRAIN = not CKPT.exists() or bool(os.environ.get("RETRAIN"))
+if NEED_TRAIN:  # demos are only needed for training
+    idx = list_episodes(DATA)
+    idx = idx[idx.outcome == "success"]
+    eps = load_many(idx.path.tolist(), cams=IMG_CAMS if P["obs_mode"] == "image" else (), frames=P["obs_mode"] == "image", progress=False)
+    print(f"{len(eps)} successful demos, {sum(len(e['action']) for e in eps)} steps")
 
 # %% [markdown]
 # ## 2 · Train (or load a cached checkpoint)
 
 # %%
 cfg = PolicyCfg(obs_mode=P["obs_mode"], cams=IMG_CAMS, action_mode="rel", prediction="sample", ddim_eta=0.0)
-if CKPT.exists() and not os.environ.get("RETRAIN"):
+if not NEED_TRAIN:
     pol = load_policy(CKPT)
     print("loaded", CKPT)
 else:
