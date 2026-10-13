@@ -24,8 +24,8 @@
 import os, sys, pathlib, subprocess, time, json
 import numpy as np, pandas as pd, torch
 import matplotlib.pyplot as plt
-from plugsim.learn.data import list_episodes, load_episode_arrays, split_by_category
-from plugsim.learn.encoders import train_ae, save_ae, CosmosEncoder
+from plugsim.learn.data import list_episodes, load_episode_arrays, try_load_episode, split_by_category
+from plugsim.learn.encoders import train_ae, save_ae, load_ae, CosmosEncoder
 from plugsim.learn.wm import train_wm, wm_features, score_episode, save_wm
 from plugsim.tools import run_live
 from plugsim.learn.monitor import evaluate_monitor, summarize, auroc, conformal_threshold, three_way, smooth, event_time
@@ -68,13 +68,18 @@ pd.crosstab(idx.category, idx.outcome)
 if USE_COSMOS:
     enc = CosmosEncoder(USE_COSMOS, device=P["device"])
 else:
-    sub = splits["nominal_train"].path.tolist()
-    frames = np.concatenate([np.concatenate([load_episode_arrays(p, CAMS)["frames"][c][::3] for c in CAMS]) for p in sub])
-    print("AE training frames:", frames.shape)
-    enc, ae_hist = train_ae(frames, latent=P["latent"], steps=P["ae_steps"], device=P["device"])
-    save_ae(enc, RUNS / "wm_ae.pt")
-    del frames
-    ep = load_episode_arrays(splits["nominal_test"].path.iloc[0], CAMS)
+    if (RUNS / "wm_ae.pt").exists() and not os.environ.get("RETRAIN"):  # cached from an earlier run
+        enc = load_ae(RUNS / "wm_ae.pt", device=P["device"])
+        print("loaded", RUNS / "wm_ae.pt")
+    else:
+        sub = [e for e in (try_load_episode(p, CAMS) for p in splits["nominal_train"].path) if e is not None]
+        frames = np.concatenate([np.concatenate([e["frames"][c][::3] for c in CAMS]) for e in sub])
+        del sub
+        print("AE training frames:", frames.shape)
+        enc, ae_hist = train_ae(frames, latent=P["latent"], steps=P["ae_steps"], device=P["device"])
+        save_ae(enc, RUNS / "wm_ae.pt")
+        del frames
+    ep = next(e for e in (try_load_episode(p, CAMS) for p in splits["nominal_test"].path) if e is not None)
     x = torch.as_tensor(np.stack([ep["frames"][c][60] for c in CAMS])).permute(0, 3, 1, 2).float().to(P["device"]) / 255
     with torch.no_grad():
         rec = enc.decode(enc.forward_latent(x)).permute(0, 2, 3, 1).cpu().numpy()
@@ -89,13 +94,21 @@ else:
 
 # %%
 t = time.time()
-feats, anns = {}, {}
-for p in idx.path:
-    ep = load_episode_arrays(p, CAMS)
+feats, anns, bad = {}, {}, []
+for i, p in enumerate(idx.path):
+    ep = try_load_episode(p, CAMS)  # retries, then skips corrupt / incomplete episodes
+    if ep is None:
+        bad.append(p)
+        continue
     z = np.concatenate([enc.encode(ep["frames"][c]) for c in CAMS], 1)
     feats[p] = dict(x=wm_features(z, ep["state"]), action=ep["action"])
     anns[p] = ep["ann"]
-print(f"encoded {len(feats)} episodes in {time.time() - t:.0f}s; x dim = {next(iter(feats.values()))['x'].shape[1]}")
+    if (i + 1) % 250 == 0:
+        print(f"  encoded {i + 1}/{len(idx)} ({time.time() - t:.0f}s)", flush=True)
+if bad:  # drop them everywhere downstream
+    idx = idx[idx.path.isin(list(feats))]
+    splits = {k: v[v.path.isin(list(feats))] for k, v in splits.items()}
+print(f"encoded {len(feats)} episodes in {time.time() - t:.0f}s ({len(bad)} unreadable skipped); x dim = {next(iter(feats.values()))['x'].shape[1]}")
 
 # %% [markdown]
 # ## 4 · Train the success-WM (nominal only) and a failure-WM (known failures)

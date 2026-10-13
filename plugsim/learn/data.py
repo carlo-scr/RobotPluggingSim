@@ -94,6 +94,27 @@ def load_episode_arrays(path, cams=(), frames=True):
     return out
 
 
+def try_load_episode(path, cams=(), frames=True, retries=2, wait_s=2.0):
+    """load_episode_arrays that retries (e.g. Drive/FUSE hiccups) and returns None for unreadable or
+    incomplete episodes (corrupt video, fewer frames than steps) instead of raising."""
+    import time as _t
+
+    err = None
+    for _ in range(retries + 1):
+        try:
+            ep = load_episode_arrays(path, cams, frames)
+            T = len(ep["state"])
+            short = [c for c in cams if frames and len(ep["frames"][c]) < T]
+            if short:
+                raise ValueError(f"video shorter than episode for {short}")
+            return ep
+        except Exception as e:  # noqa: BLE001
+            err = e
+            _t.sleep(wait_s)
+    print(f"skipping unreadable episode {Path(path).name}: {type(err).__name__}: {str(err).splitlines()[0][:120]}", flush=True)
+    return None
+
+
 def load_many(paths, cams=(), frames=True, progress=True):
     eps = []
     for i, p in enumerate(paths):
