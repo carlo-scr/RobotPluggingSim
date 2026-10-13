@@ -69,6 +69,7 @@ def main():
     ap.add_argument("--cameras", default=None, help="comma-separated; default = cfg.camera.record; 'none' for physics only")
     ap.add_argument("--no-states", action="store_true", help="skip sim_states.npz (saves disk)")
     ap.add_argument("--dart", type=float, default=0.0, help="DART noise (m/step) for nominal demos (policy training data)")
+    ap.add_argument("--stall-s", type=float, default=300.0, help="abort if no episode finishes for this long")
     ap.add_argument("--cfg", default="{}", help='JSON EnvCfg overrides, e.g. \'{"port.clearance": 0.0006, "camera.width": 224}\'')
     a = ap.parse_args()
 
@@ -88,26 +89,71 @@ def main():
     with open(out / f"plan_{a.seed0}.json", "w") as f:
         json.dump(dict(args=vars(a), plan=[p.to_dict() for p in plan]), f, indent=1)
 
-    jobs = [(p.to_dict(), str(out), cams, not a.no_states) for p in plan]
-    rows, errors, t0 = [], [], time.time()
+    # Resume: episodes that already have annotations.json are kept (re-running continues where it stopped).
+    from plugsim.datagen import summary_row
+
+    rows, todo = [], []
+    for p in plan:
+        ep = out / f"ep_{p.seed:07d}"
+        if (ep / "annotations.json").exists():
+            rows.append(summary_row(json.load(open(ep / "annotations.json")), str(ep)))
+        else:
+            todo.append(p)
+    if rows:
+        print(f"resuming: {len(rows)} episodes already done, {len(todo)} to go", flush=True)
+
+    # Fail fast if rendering does not work here (instead of workers dying silently).
+    if cams is None or cams:
+        _init(json.loads(a.cfg))
+        cam = (cams or list(_ENV.cfg.camera.record))[0]
+        t = time.time()
+        for _ in range(5):
+            _ENV.render(cam)
+        print(f"render check ok: {(time.time() - t) / 5 * 1000:.0f} ms/frame (MUJOCO_GL={os.environ.get('MUJOCO_GL', 'default')})", flush=True)
+
+    jobs = [(p.to_dict(), str(out), cams, not a.no_states) for p in todo]
+    errors, t0, n = [], time.time(), len(jobs)
+    from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
+    from concurrent.futures.process import BrokenProcessPool
+
     ctx = get_context("spawn")  # never share GL contexts across fork
-    with ctx.Pool(a.workers, initializer=_init, initargs=(json.loads(a.cfg),)) as pool:
-        for i, (row, err) in enumerate(pool.imap_unordered(_work, jobs, chunksize=1)):
-            if row:
-                rows.append(row)
-            if err:
-                errors.append(err)
-                print("ERROR", err[0], err[1].splitlines()[-1], flush=True)
-            if (i + 1) % max(1, a.n // 20) == 0 or i + 1 == a.n:
-                el = time.time() - t0
-                print(f"[{i + 1}/{a.n}] {el:.0f}s elapsed, {(i + 1) / el:.2f} ep/s, eta {(a.n - i - 1) * el / (i + 1):.0f}s", flush=True)
+    # ProcessPoolExecutor (unlike multiprocessing.Pool) raises if a worker process dies instead of hanging.
+    ex = ProcessPoolExecutor(max_workers=a.workers, mp_context=ctx, initializer=_init, initargs=(json.loads(a.cfg),))
+    pending = {ex.submit(_work, j) for j in jobs}
+    done_n = 0
+    try:
+        while pending:
+            done, pending = wait(pending, timeout=a.stall_s, return_when=FIRST_COMPLETED)
+            if not done:
+                raise RuntimeError(f"no episode finished in {a.stall_s:.0f}s: workers look stuck (check rendering / MUJOCO_GL). "
+                                   f"Re-run the same command to resume.")
+            for f in done:
+                row, err = f.result()  # raises BrokenProcessPool if a worker crashed
+                done_n += 1
+                if row:
+                    rows.append(row)
+                if err:
+                    errors.append(err)
+                    print("ERROR", err[0], err[1].splitlines()[-1], flush=True)
+                if done_n % max(1, n // 40) == 0 or done_n == n:
+                    el = time.time() - t0
+                    print(f"[{done_n}/{n}] {el:.0f}s elapsed, {done_n / el:.2f} ep/s, eta {(n - done_n) * el / done_n:.0f}s", flush=True)
+    except (BrokenProcessPool, RuntimeError, KeyboardInterrupt) as e:
+        print(f"ABORTED after {done_n}/{n} new episodes: {type(e).__name__}: {e}", flush=True)
+        for f in pending:
+            f.cancel()
+        for proc in list(getattr(ex, "_processes", {}).values()):
+            proc.kill()
+        ex.shutdown(wait=False, cancel_futures=True)
+        sys.exit(1)
+    ex.shutdown()
     idx = pd.DataFrame(rows).sort_values("seed")
     idx.to_parquet(out / f"index_{a.seed0}.parquet")
     if errors:
         with open(out / f"errors_{a.seed0}.json", "w") as f:
             json.dump(errors, f, indent=1)
     print(idx.groupby(["category", "outcome"]).size().to_string())
-    print(f"done: {len(rows)} episodes, {len(errors)} errors, {time.time() - t0:.0f}s -> {out}")
+    print(f"done: {len(rows)} episodes, {len(errors)} errors, {time.time() - t0:.0f}s -> {out}", flush=True)
 
 
 if __name__ == "__main__":

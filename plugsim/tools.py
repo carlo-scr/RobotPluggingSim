@@ -140,3 +140,19 @@ def chunk_then_expert(env: PlugEnv, ex: ScriptedExpert, chunk, until=("release",
         if ex.phase in until or ex.done:
             break
     return finish(env, ex, until=until, max_s=max_s)
+
+
+def run_live(cmd, cwd=None, skip=("WARNING",)):
+    """Run a script and stream its output into the notebook (raise with the tail of the log on failure)."""
+    import subprocess
+
+    p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1, cwd=cwd)
+    tail = []
+    for line in p.stdout:
+        if any(k in line for k in skip):
+            continue
+        print(line, end="", flush=True)
+        tail = (tail + [line])[-40:]
+    rc = p.wait()
+    if rc:
+        raise RuntimeError(f"command failed (exit {rc}); last lines:\n" + "".join(tail))

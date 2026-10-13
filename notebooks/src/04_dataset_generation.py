@@ -18,6 +18,7 @@
 import os, sys, pathlib, subprocess, json, time
 import numpy as np, pandas as pd
 import matplotlib.pyplot as plt
+from plugsim.tools import run_live
 
 OUT = ROOT / "data" / "smoke"   # small local dataset (gitignored)
 N, WORKERS = 12, 4
@@ -29,8 +30,7 @@ N, WORKERS = 12, 4
 t = time.time()
 cmd = [sys.executable, str(ROOT / "scripts" / "generate_dataset.py"), "--out", str(OUT), "--n", str(N),
        "--workers", str(WORKERS), "--mix", "nominal:0.5,known_failure:0.35,ood:0.15"]
-r = subprocess.run(cmd, capture_output=True, text=True)
-print("\n".join(l for l in r.stdout.splitlines() if "WARNING" not in l)[-1500:]); print(r.stderr[-500:] if r.returncode else "")
+run_live(cmd)  # streams progress
 wall = time.time() - t
 idx = pd.read_parquet(OUT / "index_0.parquet")
 size_mb = sum(f.stat().st_size for f in OUT.rglob("*") if f.is_file()) / 1e6

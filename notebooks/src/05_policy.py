@@ -36,7 +36,7 @@ from plugsim.scenario import sample_scenario
 from plugsim.expert import ScriptedExpert
 from plugsim.learn.data import list_episodes, load_many
 from plugsim.learn.policy import PolicyCfg, train_policy, save_policy, load_policy, PolicyRunner, rollout
-from plugsim.tools import video_html
+from plugsim.tools import video_html, run_live
 
 SCALE = os.environ.get("PLUGSIM_SCALE", "local")
 NCPU = max(1, (os.cpu_count() or 2) - 1)
@@ -64,9 +64,10 @@ if not (DATA / "index_0.parquet").exists() and not (CKPT.exists() and not os.env
     cams = "none" if P["obs_mode"] == "state" else ",".join(IMG_CAMS)
     cfg_over = json.dumps({"camera.width": 128, "camera.height": 72})
     t = time.time()
-    r = subprocess.run([sys.executable, str(ROOT / "scripts/generate_dataset.py"), "--out", str(DATA), "--n", str(P["n_demos"]), "--workers", str(P["workers"]),
-                        "--mix", "nominal:1", "--cameras", cams, "--dart", str(P["dart"]), "--no-states", "--cfg", cfg_over], capture_output=True, text=True)
-    print(r.stdout.splitlines()[-1] if r.stdout else r.stderr[-2000:], f"({time.time() - t:.0f}s)")
+    # streams progress; resumes if interrupted (re-run this cell); aborts with a message if workers get stuck
+    run_live([sys.executable, "-u", str(ROOT / "scripts/generate_dataset.py"), "--out", str(DATA), "--n", str(P["n_demos"]), "--workers", str(P["workers"]),
+              "--mix", "nominal:1", "--cameras", cams, "--dart", str(P["dart"]), "--no-states", "--cfg", cfg_over])
+    print(f"({time.time() - t:.0f}s)")
 NEED_TRAIN = not CKPT.exists() or bool(os.environ.get("RETRAIN"))
 if NEED_TRAIN:  # demos are only needed for training
     idx = list_episodes(DATA)

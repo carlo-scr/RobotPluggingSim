@@ -27,6 +27,7 @@ import matplotlib.pyplot as plt
 from plugsim.learn.data import list_episodes, load_episode_arrays, split_by_category
 from plugsim.learn.encoders import train_ae, save_ae, CosmosEncoder
 from plugsim.learn.wm import train_wm, wm_features, score_episode, save_wm
+from plugsim.tools import run_live
 from plugsim.learn.monitor import evaluate_monitor, summarize, auroc, conformal_threshold, three_way, smooth, event_time
 
 SCALE = os.environ.get("PLUGSIM_SCALE", "local")
@@ -49,10 +50,10 @@ print(SCALE, P, "| cosmos:", bool(USE_COSMOS))
 if not (DATA / "index_0.parquet").exists():
     cfg = json.dumps({"camera.width": P["hw"][1], "camera.height": P["hw"][0]})
     t = time.time()
-    r = subprocess.run([sys.executable, str(ROOT / "scripts/generate_dataset.py"), "--out", str(DATA), "--n", str(P["n"]), "--workers", str(P["workers"]),
-                        "--mix", "nominal:0.55,known_failure:0.25,ood:0.2", "--cameras", ",".join(CAMS), "--no-states", "--cfg", cfg, "--seed0", "100000"],
-                       capture_output=True, text=True)
-    print(r.stdout.splitlines()[-1] if r.stdout else r.stderr[-2000:], f"({time.time() - t:.0f}s)")
+    # streams progress; resumes if interrupted (re-run this cell); aborts with a message if workers get stuck
+    run_live([sys.executable, "-u", str(ROOT / "scripts/generate_dataset.py"), "--out", str(DATA), "--n", str(P["n"]), "--workers", str(P["workers"]),
+              "--mix", "nominal:0.55,known_failure:0.25,ood:0.2", "--cameras", ",".join(CAMS), "--no-states", "--cfg", cfg, "--seed0", "100000"])
+    print(f"({time.time() - t:.0f}s)")
 idx = list_episodes(DATA)
 splits = split_by_category(idx)
 print({k: len(v) for k, v in splits.items()})
