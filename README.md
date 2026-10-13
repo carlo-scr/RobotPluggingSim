@@ -148,6 +148,9 @@ tests/test_smoke.py
 
 * Nominal scripted expert: 80/80 seeds latched in the v0.2 scene (2 × 24-port panel with occupied
   neighbours, rack pose jitter, clutter); ≈1 % of episodes need a jam retry.
+* Learned Diffusion Policy (state obs, `a100` preset: 4,000 DART demos, 60k steps): **76 %** success
+  on 50 held-out scenarios, vs **98 %** for the privileged expert on the same scenarios
+  (laptop preset: 25 %).
 * Restore + replay of recorded actions: bit-exact (max state deviation 0.0).
 * ≈ 2 s per episode physics-only and ≈ 8 s with 4 cameras per CPU core on an M-series Mac. About 2 MB per episode.
 

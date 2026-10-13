@@ -110,23 +110,36 @@ print(f"policy success {R.policy.mean():.0%}  |  expert success {R.expert.mean()
 R.head(10)
 
 # %% [markdown]
-# ## 4 · One policy rollout
+# ## 4 · Policy rollouts: a success and a failure
 
 # %%
+# The policy samples stochastically, so a re-run of an evaluation seed is a new draw: record rollouts
+# until we have one success and one failure (at ~3/4 success that takes a few tries).
 envr = PlugEnv()
-runner_r = PolicyRunner(pol, envr, seed=1)
-seed = int(R[R.policy].seed.iloc[0]) if R.policy.any() else 900_000
-sc = sample_scenario(envr.cfg, seed)
-envr.reset(sc)
-frames = []
-t_latch = None
-while envr.time < 16:
-    envr.step(runner_r.act())
-    if envr.step_count % 2 == 0:
-        arm = "right" if envr.privileged()["grasp_pos"][1] < 0 else "left"
-        frames.append(np.concatenate([envr.render_free(lookat=(0.4, 0, 0.95), distance=1.5, azimuth=90, elevation=-30, width=384, height=216),
-                                      envr.render(f"{arm}_gripper_front", 384, 216)], 1))
-    if envr.latched_port >= 0 and t_latch is None: t_latch = envr.time
-    if t_latch and envr.time - t_latch > 1: break
-print("latched:", envr.latched_port, "target:", sc.port_idx)
-video_html(frames, fps=10, width=760)
+def record(seed, runner_seed):
+    runner_r = PolicyRunner(pol, envr, seed=runner_seed)
+    sc = sample_scenario(envr.cfg, seed)
+    envr.reset(sc)
+    frames, t_latch = [], None
+    while envr.time < 16:
+        envr.step(runner_r.act())
+        if envr.step_count % 2 == 0:
+            arm = "right" if envr.privileged()["grasp_pos"][1] < 0 else "left"
+            frames.append(np.concatenate([envr.render_free(lookat=(0.4, 0, 0.95), distance=1.5, azimuth=90, elevation=-30, width=384, height=216),
+                                          envr.render(f"{arm}_gripper_front", 384, 216)], 1))
+        if envr.latched_port >= 0 and t_latch is None: t_latch = envr.time
+        if t_latch and envr.time - t_latch > 1: break
+    return envr.latched_port == sc.port_idx, frames
+
+clips = {}
+for k, seed in enumerate(R.seed.tolist()[:12]):
+    ok, frames = record(int(seed), runner_seed=k)
+    print(f"seed {seed}: {'success' if ok else 'failure'}")
+    clips.setdefault(ok, frames)
+    if len(clips) == 2: break
+
+# %%
+video_html(clips.get(True, next(iter(clips.values()))), fps=10, width=760)  # a success
+
+# %%
+video_html(clips[False], fps=10, width=760) if False in clips else print("no failure in these tries")  # a failure
