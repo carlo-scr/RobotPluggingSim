@@ -70,6 +70,7 @@ def main():
     ap.add_argument("--no-states", action="store_true", help="skip sim_states.npz (saves disk)")
     ap.add_argument("--dart", type=float, default=0.0, help="DART noise (m/step) for nominal demos (policy training data)")
     ap.add_argument("--stall-s", type=float, default=300.0, help="abort if no episode finishes for this long")
+    ap.add_argument("--max-render-ms", type=float, default=200.0, help="abort if a frame takes longer (software rendering)")
     ap.add_argument("--cfg", default="{}", help='JSON EnvCfg overrides, e.g. \'{"port.clearance": 0.0006, "camera.width": 224}\'')
     a = ap.parse_args()
 
@@ -106,10 +107,17 @@ def main():
     if cams is None or cams:
         _init(json.loads(a.cfg))
         cam = (cams or list(_ENV.cfg.camera.record))[0]
+        _ENV.render(cam)  # warm-up
         t = time.time()
         for _ in range(5):
             _ENV.render(cam)
-        print(f"render check ok: {(time.time() - t) / 5 * 1000:.0f} ms/frame (MUJOCO_GL={os.environ.get('MUJOCO_GL', 'default')})", flush=True)
+        ms = (time.time() - t) / 5 * 1000
+        print(f"render check: {ms:.0f} ms/frame (MUJOCO_GL={os.environ.get('MUJOCO_GL', 'default')})", flush=True)
+        if ms > a.max_render_ms:
+            print(f"ABORTED: rendering is far too slow ({ms:.0f} ms/frame, expected ~2-30 ms): this is CPU (software) rendering.\n"
+                  "On Colab: the NVIDIA EGL vendor file is missing - re-run the notebook's first (setup) cell, which writes\n"
+                  "/usr/share/glvnd/egl_vendor.d/10_nvidia.json, then retry. Override with --max-render-ms.", flush=True)
+            sys.exit(2)
 
     jobs = [(p.to_dict(), str(out), cams, not a.no_states) for p in todo]
     errors, t0, n = [], time.time(), len(jobs)

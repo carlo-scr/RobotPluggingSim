@@ -13,6 +13,13 @@ if IN_COLAB:
     os.environ.setdefault("MKL_NUM_THREADS", "1")
     os.environ.setdefault("MUJOCO_GL", "egl")
     os.environ.setdefault("PYOPENGL_PLATFORM", "egl")
+    # Colab ships the NVIDIA driver but not its EGL vendor file, so EGL silently falls back to CPU
+    # (software) rendering, ~100x slower. Register the NVIDIA EGL library (as in MuJoCo's Colab tutorial).
+    _icd = pathlib.Path("/usr/share/glvnd/egl_vendor.d/10_nvidia.json")
+    if subprocess.run(["nvidia-smi"], capture_output=True).returncode == 0 and not _icd.exists():
+        _icd.parent.mkdir(parents=True, exist_ok=True)
+        _icd.write_text('{"file_format_version": "1.0.0", "ICD": {"library_path": "libEGL_nvidia.so.0"}}\n')
+        print("registered the NVIDIA EGL vendor file (GPU rendering)")
     CODE = pathlib.Path("/content/RobotPluggingSim")
     DRIVE = pathlib.Path("/content/drive/MyDrive")
     if (CODE / ".git").exists():
