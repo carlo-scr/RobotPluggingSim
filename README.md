@@ -63,7 +63,7 @@ snap = env.get_state(); env.set_state(snap)       # exact restore
 | [03_failures_and_ood](notebooks/03_failures_and_ood.ipynb) | 7 failure types × severity outcome matrix, 7 OOD shifts, failure gallery |
 | [04_dataset_generation](notebooks/04_dataset_generation.ipynb) | parallel generation, on-disk format, loader compatibility, counterfactual branching, H100 scaling |
 | [05_policy](notebooks/05_policy.ipynb) | Diffusion Policy (state or image) trained on DART demos; closed-loop eval vs the expert |
-| [06_world_model_monitor](notebooks/06_world_model_monitor.ipynb) | encoder (conv AE or Cosmos) + probabilistic latent WM; conformal failure monitor; three-way decision |
+| [06_world_model_monitor](notebooks/06_world_model_monitor.ipynb) | encoder (edge-weighted conv AE or Cosmos) + probabilistic latent WM with a cameras/gripper-state ablation; conformal failure monitor (NLL + kNN novelty) scored against the physical outcome and lead time; three-way decision |
 | [07_steering](notebooks/07_steering.ipynb) | RQ1 oracle ranking from saved states, best-of-K steering, conformal abstention, Learn-then-Test |
 | [colab_runner](notebooks/colab_runner.ipynb) | runs 05–07 on a Colab A100 with the `a100` preset (data/checkpoints on Drive) |
 

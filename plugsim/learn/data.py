@@ -115,6 +115,24 @@ def try_load_episode(path, cams=(), frames=True, retries=2, wait_s=2.0):
     return None
 
 
+def iter_episodes(paths, cams=(), frames=True, workers=8):
+    """try_load_episode over paths, decoding up to 2 * workers episodes ahead in threads (video decoding
+    runs in ffmpeg subprocesses, so threads parallelise it). Yields (path, episode or None) in order."""
+    from collections import deque
+    from concurrent.futures import ThreadPoolExecutor
+
+    with ThreadPoolExecutor(workers) as ex:
+        q = deque()
+        for p in paths:
+            q.append((p, ex.submit(try_load_episode, p, cams, frames)))
+            if len(q) > 2 * workers:
+                p0, fut = q.popleft()
+                yield p0, fut.result()
+        while q:
+            p0, fut = q.popleft()
+            yield p0, fut.result()
+
+
 def load_many(paths, cams=(), frames=True, progress=True):
     eps = []
     for i, p in enumerate(paths):

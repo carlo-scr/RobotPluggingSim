@@ -51,8 +51,19 @@ class ConvAE(nn.Module):
         return torch.cat(out).numpy().astype(np.float32)
 
 
-def train_ae(frames: np.ndarray, latent=32, steps=3000, bs=128, lr=1e-3, device="cpu", log=print, log_every=500):
-    """frames uint8 [N,H,W,3] (all cameras pooled)."""
+def edge_weights(x, strength):
+    """Per-pixel loss weights 1 .. 1 + strength from the target's gradient magnitude. Thin, high-contrast
+    structures (the cable, the plug, port edges) cover few pixels, so a plain MSE autoencoder blurs them
+    away while the table and the gripper fingers dominate the loss."""
+    g = x.mean(1, keepdim=True)
+    m = F.pad((g[..., :, 1:] - g[..., :, :-1]).abs(), (0, 1)) + F.pad((g[..., 1:, :] - g[..., :-1, :]).abs(), (0, 0, 0, 1))
+    m = m / (m.mean(dim=(1, 2, 3), keepdim=True) + 1e-6)
+    return 1 + strength * (m / 10).clamp(max=1)
+
+
+def train_ae(frames: np.ndarray, latent=32, steps=3000, bs=128, lr=1e-3, device="cpu", log=print, log_every=500, edge=0.0):
+    """frames uint8 [N,H,W,3] (all cameras pooled). edge > 0 weights the reconstruction loss towards
+    edges (see edge_weights); the logged mse is always the plain one."""
     ae = ConvAE(frames.shape[1:3], latent).to(device)
     opt = torch.optim.AdamW(ae.parameters(), lr=lr)
     sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, steps)
@@ -60,12 +71,17 @@ def train_ae(frames: np.ndarray, latent=32, steps=3000, bs=128, lr=1e-3, device=
     for it in range(steps):
         j = np.random.randint(0, len(frames), bs)
         x = ae._x(frames[j]).to(device)
-        loss = F.mse_loss(ae.decode(ae.forward_latent(x)), x)
+        err = (ae.decode(ae.forward_latent(x)) - x) ** 2
+        if edge > 0:
+            w = edge_weights(x, edge)
+            loss = (w * err).mean() / w.mean()
+        else:
+            loss = err.mean()
         opt.zero_grad()
         loss.backward()
         opt.step()
         sched.step()
-        hist.append(loss.item())
+        hist.append(err.mean().item())
         if log and (it % log_every == 0 or it == steps - 1):
             log(f"[ae] step {it:5d}  mse {np.mean(hist[-log_every:]):.5f}  ({time.time() - t0:.0f}s)")
     return ae.eval(), hist

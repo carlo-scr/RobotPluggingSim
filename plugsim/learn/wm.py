@@ -10,6 +10,7 @@ only. Non-conformity scores:
 """
 from __future__ import annotations
 
+import copy
 import time
 
 import numpy as np
@@ -26,20 +27,24 @@ def wm_features(latents: np.ndarray, state: np.ndarray) -> np.ndarray:
 
 
 class _Member(nn.Module):
-    def __init__(self, d_in, d_out, hidden):
+    def __init__(self, d_in, d_out, hidden, min_log_std=-6.0):
         super().__init__()
         self.net = nn.Sequential(nn.Linear(d_in, hidden), nn.SiLU(), nn.Linear(hidden, hidden), nn.SiLU(), nn.Linear(hidden, 2 * d_out))
+        self.min_log_std = min_log_std
 
     def forward(self, x):
         mu, log_std = self.net(x).chunk(2, -1)
-        return mu, log_std.clamp(-6.0, 2.0).exp()
+        return mu, log_std.clamp(self.min_log_std, 2.0).exp()
 
 
 class LatentWM(nn.Module):
-    def __init__(self, x_dim, a_dim=16, H=2, n_members=5, hidden=512):
+    def __init__(self, x_dim, a_dim=16, H=2, n_members=5, hidden=512, min_log_std=-6.0):
+        """min_log_std floors the predicted std (normalised units). Near-deterministic dimensions (e.g. a
+        TCP quaternion while the arm moves straight) otherwise get std ~ e^-6, and any jolt there gives a
+        one-step NLL of 1e7+ that swamps every other dimension."""
         super().__init__()
-        self.x_dim, self.a_dim, self.H = x_dim, a_dim, H
-        self.members = nn.ModuleList([_Member(H * (x_dim + a_dim) + a_dim, x_dim, hidden) for _ in range(n_members)])
+        self.x_dim, self.a_dim, self.H, self.min_log_std = x_dim, a_dim, H, min_log_std
+        self.members = nn.ModuleList([_Member(H * (x_dim + a_dim) + a_dim, x_dim, hidden, min_log_std) for _ in range(n_members)])
         for n, d in (("x_mean", x_dim), ("x_std", x_dim), ("a_mean", a_dim), ("a_std", a_dim), ("d_mean", x_dim), ("d_std", x_dim)):
             self.register_buffer(n, torch.zeros(d) if "mean" in n else torch.ones(d))
 
@@ -106,15 +111,34 @@ def windows(feats, actions, H):
     return f(HX), f(HA), f(AN), f(D)
 
 
-def train_wm(episodes, H=2, n_members=5, hidden=512, steps=4000, bs=512, lr=1e-3, device="cpu", log=print, log_every=1000):
-    """episodes: list of dict(x [T,D], action [T,A])."""
+def _stack_windows(episodes, H):
     parts = [windows(e["x"], e["action"], H) for e in episodes]
-    HX, HA, AN, D = (np.concatenate([p[i] for p in parts]) for i in range(4))
-    wm = LatentWM(HX.shape[-1], AN.shape[-1], H, n_members, hidden)
-    wm.fit_norm(HX.reshape(-1, HX.shape[-1]), AN, D)
+    return [np.concatenate([p[i] for p in parts]) for i in range(4)]
+
+
+def train_wm(episodes, H=2, n_members=5, hidden=512, steps=4000, bs=512, lr=1e-3, device="cpu", log=print, log_every=1000,
+             val=None, init=None, min_log_std=-6.0, max_val=20000):
+    """episodes: list of dict(x [T,D], action [T,A]).
+    val: held-out episodes. Their NLL is checked every log_every steps and the best weights are kept
+         (history in wm.val_hist = [(step, nll)]), so a small training set is not memorised.
+    init: a LatentWM to fine-tune instead of starting from scratch. Its normalisation is kept, so the
+          NLLs of the two models are in the same units and can be compared step by step."""
+    HX, HA, AN, D = _stack_windows(episodes, H)
+    if init is None:
+        wm = LatentWM(HX.shape[-1], AN.shape[-1], H, n_members, hidden, min_log_std)
+        wm.fit_norm(HX.reshape(-1, HX.shape[-1]), AN, D)
+    else:
+        wm = copy.deepcopy(init).cpu()
+        n_members = len(wm.members)
     wm = wm.to(device)
     t = lambda x: torch.as_tensor(x, device=device)
     HX, HA, AN, D = t(HX), t(HA), t(AN), t(D)
+    V = None
+    if val:
+        V = _stack_windows(val, H)
+        keep = np.random.default_rng(0).permutation(len(V[0]))[:max_val]
+        V = [t(v[keep]) for v in V]
+    wm.val_hist, best = [], (np.inf, None)
     opt = torch.optim.AdamW(wm.parameters(), lr=lr, weight_decay=1e-5)
     sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, steps)
     n, t0, hist = len(HX), time.time(), []
@@ -131,8 +155,19 @@ def train_wm(episodes, H=2, n_members=5, hidden=512, steps=4000, bs=512, lr=1e-3
         opt.step()
         sched.step()
         hist.append(loss.item() / n_members)
-        if log and (it % log_every == 0 or it == steps - 1):
-            log(f"[wm] step {it:5d}  nll {np.mean(hist[-log_every:]):.4f}  ({time.time() - t0:.0f}s)")
+        if it % log_every == 0 or it == steps - 1:
+            msg = ""
+            if V is not None:
+                with torch.no_grad():
+                    v = float(np.mean([wm.nll(*[x[i: i + 4096] for x in V]).item() for i in range(0, len(V[0]), 4096)]))
+                wm.val_hist.append((it, v))
+                if v < best[0]:
+                    best = (v, copy.deepcopy(wm.state_dict()))
+                msg = f"  val {v:.4f}" + (" *" if best[0] == v else "")
+            if log:
+                log(f"[wm] step {it:5d}  nll {np.mean(hist[-log_every:]):.4f}{msg}  ({time.time() - t0:.0f}s)")
+    if best[1] is not None:
+        wm.load_state_dict(best[1])
     return wm.eval(), hist
 
 
@@ -146,11 +181,13 @@ def score_episode(wm: LatentWM, x, actions, device="cpu"):
 
 
 def save_wm(wm: LatentWM, path):
-    torch.save(dict(x_dim=wm.x_dim, a_dim=wm.a_dim, H=wm.H, n=len(wm.members), hidden=wm.members[0].net[0].out_features, state=wm.state_dict()), path)
+    torch.save(dict(x_dim=wm.x_dim, a_dim=wm.a_dim, H=wm.H, n=len(wm.members), hidden=wm.members[0].net[0].out_features,
+                    min_log_std=wm.min_log_std, val_hist=getattr(wm, "val_hist", []), state=wm.state_dict()), path)
 
 
 def load_wm(path, device="cpu") -> LatentWM:
     ck = torch.load(path, map_location=device, weights_only=False)
-    wm = LatentWM(ck["x_dim"], ck["a_dim"], ck["H"], ck["n"], ck["hidden"])
+    wm = LatentWM(ck["x_dim"], ck["a_dim"], ck["H"], ck["n"], ck["hidden"], ck.get("min_log_std", -6.0))
+    wm.val_hist = ck.get("val_hist", [])
     wm.load_state_dict(ck["state"])
     return wm.to(device).eval()
